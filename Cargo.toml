@@ -1,0 +1,9 @@
+[package]
+name = "barrier"
+version = "0.1.0"
+authors = ["James Millard <millard.jn@gmail.com>"]
+
+[dependencies]
+
+[dev-dependencies]
+rand = "0.3.15"
