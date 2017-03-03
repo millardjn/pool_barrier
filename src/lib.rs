@@ -7,13 +7,17 @@ use std::ptr;
 /// Threads which call check_in() do not block, in contrast to `std::sync::Barrier`, which blocks all threads and potentially deadlocks when used with an over-utilised threadpool.
 /// To use and reuse the `Barrier` an `ActiveBarrier` must be generated using `activate()`, which can then be used to generate checkpoints using 'checkpoint()'.
 /// An ActiveBarrier cannot be dropped without blocking until all checkpoints are cleared.
-/// Generating more than `n` `Checkpoints` results in a panic. Generating less than `n` `Checkpoints` will cause a panic when attempting to call `wait()` or drop the `ActiveBarrier`.
+/// Generating more than `n` `Checkpoints` results in a panic. Generating less than `n` `Checkpoints` will result in an error being returned from `wait()`.
+/// If a Checkpoint is passed by a panicking thread, `wait()` will return an error.
 ///
 /// # Examples
 /// ```
 /// use barrier::{Barrier, ActiveBarrier};
 ///
-/// const THREADS: usize = 10;
+/// const THREADS: usize = 5;
+///
+/// let mut barrier = Barrier::new(THREADS);
+/// run(barrier.activate());
 ///
 /// fn run(mut barrier: ActiveBarrier){
 /// 	for i in 0..THREADS{
@@ -27,8 +31,6 @@ use std::ptr;
 /// 	println!("main thread");                        // this occurs last 
 /// }
 ///
-/// let mut barrier = Barrier::new(THREADS);
-/// run(barrier.activate());
 /// ```
 pub struct Barrier{
 	n: usize,
@@ -41,7 +43,7 @@ pub struct Barrier{
 
 impl Barrier{
 	/// Create a new barrier
-	/// - 'n' : the exact number of checkpoints to be generated, all of which must be cleared before wait() unblocks
+	/// - 'n' : the exact number of checkpoints to be generated, all of which must be cleared before `wait()` unblocks
 	pub fn new(n: usize) -> Barrier{
 		Barrier{
 			n: n,
@@ -158,7 +160,7 @@ pub enum WaitError {
 pub type WaitResult = Result<(), WaitError>;
 
 /// A checkpoint which must be cleared, by calling `check_in()`, before `wait()` on the parent ActiveBarrier no longer blocks.
-/// Automatically clears when dropped.
+/// Can be sent to other threads. Automatically clears when dropped.
 pub struct Checkpoint{
 	barrier: *const Barrier,
 }
