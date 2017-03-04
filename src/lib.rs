@@ -10,7 +10,7 @@ use std::ptr;
 /// Generating more than `n` `Checkpoints` results in a panic. Generating less than `n` `Checkpoints` will result in an error being returned from `wait()`.
 /// If a Checkpoint is passed by a panicking thread, `wait()` will return an error.
 ///
-/// # Examples
+/// # Example
 /// ```
 /// use barrier::{Barrier, ActiveBarrier};
 ///
@@ -55,18 +55,14 @@ impl Barrier{
 		}
 	}
 	
+	/// Change the number of checkpoints that have to be cleared on the next barrier activation.
 	pub fn set_n(&mut self, n: usize){
 		self.n = n;
-		self.reset();
 	}
 
+	/// Activate the barrier producing an ActiveBarrier. The returned ActiveBarrier can then produce checkpoints which may be passed to worker threads, and will block on wait() or drop() until checkpoints are cleared.
 	pub fn activate<'a>(&'a mut self) -> ActiveBarrier<'a>{
-		// reset if necessary
-		if self.checkpoints_created != 0{
-			debug_assert_eq!(0, self.checkpoints_remaining.load(Ordering::SeqCst)); // assert that previous barrier cycle was fully completed.
-			self.reset();
-		}
-		
+		self.reset();
 		ActiveBarrier{barrier: self}
 	}
 	
@@ -77,24 +73,25 @@ impl Barrier{
 	fn reset(&mut self){
 		*self.finished.lock().unwrap() = false;
 		self.checkpoints_created = 0;
-		self.checkpoints_remaining.store(self.n, Ordering::SeqCst);
-		self.checkpoint_panicked.store(false, Ordering::SeqCst);
+		self.checkpoints_remaining.store(self.n, Ordering::Release);
+		self.checkpoint_panicked.store(false, Ordering::Release);
 	}
 
 	fn check_in_x(&self, x: usize){
 		
 		let result = self.checkpoints_remaining.fetch_sub(x, Ordering::AcqRel);
-		debug_assert!(result >= x);
-		debug_assert!(result <= self.n);
+		debug_assert!(result >= x); // assert that fetch_sub didnt just underflow
+		debug_assert!(result <= self.n); // assert that underflow hasn't already occured
 		if result == x {
 			let mut finished = self.finished.lock().unwrap();
 			*finished = true;
-			self.cvar.notify_all(); // Cannot use &self after this point
+			self.cvar.notify_all();
+			// Cannot use &self after this point as mutex guard drops and barrier might be dropped.
 		}
 	}
 }
 
-/// An active barrier cannot be dropped without blocking until all checkpoints are cleared.
+/// An ActiveBarrier can be used to generate checkpoints which must be cleared (usually by worker threads) before `wait()` and `drop()` unblock.
 pub struct ActiveBarrier<'a>{
 	barrier: &'a mut Barrier,
 }
@@ -102,7 +99,9 @@ pub struct ActiveBarrier<'a>{
 impl<'a> ActiveBarrier<'a>{
 
 	/// Generate a new `Checkpoint` to be cleared.
-	/// Panics if called more than `n` times.
+	///
+	/// # Panics
+	/// This function will panics if called more than `n` times.
 	pub fn checkpoint(&mut self) -> Checkpoint{
 		if self.barrier.checkpoints_created >= self.barrier.n{
 			panic!("More than n checkpoints generated.");
