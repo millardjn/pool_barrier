@@ -111,6 +111,11 @@ impl<'a> ActiveBarrier<'a>{
 		}
 	}
 	
+	/// Returns true if all checkpoints have been cleared and any calls to `wait()` or `drop` will not block.
+	pub fn finished(&self) -> bool {
+		*self.barrier.finished.lock().unwrap()
+	}
+
 	/// Block thread until all checkpoints are cleared.
 	/// Returns a CheckpointPanic Err if a checkpoint is passed by a panicking thread.
 	/// Returns an InsufficientCheckpoints Err if less than `n` `Checkpoint`s were generated.
@@ -303,6 +308,28 @@ mod tests{
 			}
 			std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
 			barrier.wait().unwrap();
+			println!("main thread");
+		}
+
+		let mut barrier = Barrier::new(THREADS);
+		run(barrier.activate());
+	}
+
+	#[test]
+	fn test_finished() {
+		fn run(mut barrier: ActiveBarrier){
+			assert_eq!(false, barrier.finished());
+			for i in 0..THREADS{
+				let mut checkpoint = barrier.checkpoint();
+				std::thread::spawn(move||{
+					std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
+					println!("thread_id: {}", i);
+					checkpoint.check_in();
+				});      
+			}
+			std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
+			barrier.wait().unwrap();
+			assert_eq!(true, barrier.finished());
 			println!("main thread");
 		}
 
