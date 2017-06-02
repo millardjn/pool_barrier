@@ -1,6 +1,6 @@
 [package]
 name = "pool_barrier"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["James Millard <millard.jn@gmail.com>"]
 description = "A barrier for blocking a main thread until the completion of work which has been offloaded to worker threads, without blocking the worker threads."
 repository = "https://github.com/millardjn/pool_barrier"
