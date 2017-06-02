@@ -8,7 +8,7 @@ documentation = "https://docs.rs/pool_barrier"
 readme = "README.md"
 keywords = ["barrier", "threadpool", "synchronize", "deadlock"]
 categories = ["concurrency", "asynchronous"]
-license = ["MIT/Apache-2.0"]
+license = "MIT/Apache-2.0"
 [dependencies]
 
 [dev-dependencies]
