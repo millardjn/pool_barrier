@@ -1,11 +1,12 @@
 
 //! A barrier for blocking a main thread until the completion of work which has been offloaded to worker threads,
 //! without blocking the worker threads.
+//!
 //! This barrier allows blocking on `wait()` until `n` `Checkpoints` have been cleared using `check_in()` or `drop()`.
 //! Threads which call check_in() do not block, in contrast to `std::sync::Barrier`
 //! which blocks all threads and potentially deadlocks when used with an over-utilised threadpool.
 //!
-//! To use and reuse the `Barrier` an `ActiveBarrier` must be generated using `activate()`, which can then be used to generate checkpoints using 'checkpoint()'.
+//! To use and reuse the `Barrier` an `ActiveBarrier` must be generated using `activate()`, which can then be used to generate checkpoints using `checkpoint()`.
 //! An ActiveBarrier cannot be dropped without blocking until all checkpoints are cleared.
 //! Generating more than `n` `Checkpoints` results in a panic. Generating less than `n` `Checkpoints` will result in an error being returned from `wait()`.
 //! If a Checkpoint is passed by a panicking thread, `wait()` will return an error.
@@ -50,7 +51,8 @@ pub struct Barrier{
 
 impl Barrier{
 	/// Create a new barrier
-	/// - 'n' : the exact number of checkpoints to be generated, all of which must be cleared before `wait()` unblocks
+	///
+	/// - `n` : the exact number of checkpoints to be generated, all of which must be cleared before `wait()` unblocks
 	pub fn new(n: usize) -> Barrier{
 		Barrier{
 			n: n,
