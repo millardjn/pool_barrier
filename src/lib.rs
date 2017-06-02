@@ -1,37 +1,44 @@
+
+//! A barrier for blocking a main thread until the completion of work which has been offloaded to worker threads,
+//! without blocking the worker threads.
+//! This barrier allows blocking on `wait()` until `n` `Checkpoints` have been cleared using `check_in()` or `drop()`.
+//! Threads which call check_in() do not block, in contrast to `std::sync::Barrier`
+//! which blocks all threads and potentially deadlocks when used with an over-utilised threadpool.
+//!
+//! To use and reuse the `Barrier` an `ActiveBarrier` must be generated using `activate()`, which can then be used to generate checkpoints using 'checkpoint()'.
+//! An ActiveBarrier cannot be dropped without blocking until all checkpoints are cleared.
+//! Generating more than `n` `Checkpoints` results in a panic. Generating less than `n` `Checkpoints` will result in an error being returned from `wait()`.
+//! If a Checkpoint is passed by a panicking thread, `wait()` will return an error.
+//!
+//! # Example
+//! ```
+//! use pool_barrier::{Barrier, ActiveBarrier};
+//!
+//! const THREADS: usize = 5;
+//!
+//! let mut barrier = Barrier::new(THREADS);
+//! run(barrier.activate());
+//! run(barrier.activate());                            // a barrier can be reused once checkpoints are cleared
+//!
+//! fn run(mut barrier: ActiveBarrier){
+//! 	for i in 0..THREADS{
+//! 		let mut checkpoint = barrier.checkpoint();
+//! 		std::thread::spawn(move||{
+//! 			println!("thread_id: {}", i);           // all of these occur in arbitrary order
+//! 			checkpoint.check_in();                  // this does not block the spawned thread
+//! 		});
+//! 	}
+//! 	barrier.wait().unwrap();                        // main thread blocks here until all checkpoints are cleared
+//! 	println!("main thread");                        // this occurs last 
+//! }
+//!
+//! ```
+
 use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::ptr;
 
-/// A barrier for synchronising a main thread with the completion of work which has been offloaded to a thread pool.
-/// This barrier allows blocking on `wait()` until `n` `Checkpoints` have been cleared using `check_in()` or `drop()`.
-/// Threads which call check_in() do not block, in contrast to `std::sync::Barrier`, which blocks all threads and potentially deadlocks when used with an over-utilised threadpool.
-/// To use and reuse the `Barrier` an `ActiveBarrier` must be generated using `activate()`, which can then be used to generate checkpoints using 'checkpoint()'.
-/// An ActiveBarrier cannot be dropped without blocking until all checkpoints are cleared.
-/// Generating more than `n` `Checkpoints` results in a panic. Generating less than `n` `Checkpoints` will result in an error being returned from `wait()`.
-/// If a Checkpoint is passed by a panicking thread, `wait()` will return an error.
-///
-/// # Example
-/// ```
-/// use barrier::{Barrier, ActiveBarrier};
-///
-/// const THREADS: usize = 5;
-///
-/// let mut barrier = Barrier::new(THREADS);
-/// run(barrier.activate());
-///
-/// fn run(mut barrier: ActiveBarrier){
-/// 	for i in 0..THREADS{
-/// 		let mut checkpoint = barrier.checkpoint();
-/// 		std::thread::spawn(move||{
-/// 			println!("thread_id: {}", i);           // all of these occur in arbitrary order
-/// 			checkpoint.check_in();                  // this does not block the spawned thread
-/// 		});
-/// 	}
-/// 	barrier.wait().unwrap();                        // main thread blocks here until checkpoints are cleared
-/// 	println!("main thread");                        // this occurs last 
-/// }
-///
-/// ```
+/// A stack allocated synchronisation barrier. See crate doc for use.
 pub struct Barrier{
 	n: usize,
 	cvar: Condvar,
@@ -65,7 +72,8 @@ impl Barrier{
 		self.reset();
 		ActiveBarrier{barrier: self}
 	}
-	
+
+	/// The number of `Checkpoint`s that must be generated and cleared each time the barrier is activated.
 	pub fn n(&self) -> usize{
 		self.n
 	}
@@ -143,7 +151,8 @@ impl<'a> ActiveBarrier<'a>{
 			Ok(())
 		}
 	}
-	
+
+	/// The number of `Checkpoint`s that must be generated and cleared each time the barrier is activated.
 	pub fn n(&self) -> usize{
 		self.barrier.n
 	}
@@ -163,8 +172,9 @@ pub enum WaitError {
 
 pub type WaitResult = Result<(), WaitError>;
 
-/// A checkpoint which must be cleared, by calling `check_in()`, before `wait()` on the parent ActiveBarrier no longer blocks.
-/// Can be sent to other threads. Automatically clears when dropped.
+/// A checkpoint which must be cleared, by calling `check_in()`.
+/// All checkpoints must be cleared before `wait()` on the parent ActiveBarrier unblocks.
+/// Can be sent to other threads. Automatically calls `check_in()` when dropped.
 pub struct Checkpoint{
 	barrier: *const Barrier,
 }
@@ -173,7 +183,7 @@ unsafe impl Send for Checkpoint{}
 
 impl Checkpoint{
 
-	/// clears the checkpoint. Calling multiple times does nothing.
+	/// Clears the checkpoint. Calling multiple times does nothing.
 	pub fn check_in(&mut self){
 		if !self.barrier.is_null() {
 			let barrier = unsafe{&*self.barrier};
@@ -194,7 +204,6 @@ impl Drop for Checkpoint{
 
 
 
-
 /// Run tests with `cargo test -- --nocapture` to see that main thread unblocks after worker threads finish
 #[cfg(test)]
 mod tests{
@@ -203,8 +212,8 @@ mod tests{
 	use tests::rand::Rng;
 	const THREADS: usize = 5;
 
-	fn threaded_run(mut barrier: ActiveBarrier){
-		for i in 0..THREADS{
+	fn threaded_run(barrier: &mut ActiveBarrier, n_threads: usize) -> WaitResult{
+		for i in 0..n_threads{
 			let mut checkpoint = barrier.checkpoint();
 			std::thread::spawn(move||{
 				std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
@@ -213,16 +222,17 @@ mod tests{
 			});      
 		}
 		std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
-		barrier.wait().unwrap();                      // main thread blocks here until checkpoints are cleared
+		let result = barrier.wait();                  // main thread blocks here until checkpoints are cleared
 		println!("main thread");                      // this occurs last 
+		result
 	}
 
-	fn panic_run(mut barrier: ActiveBarrier){
+	fn panic_run(barrier: &mut ActiveBarrier){
 		for i in 0..THREADS{
 			let mut checkpoint = barrier.checkpoint();
 			std::thread::spawn(move||{
 				std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
-				if i%2 == 0 {panic!("Deliberate panic")};
+				if i%2 == 1 {panic!("Deliberate panic")};
 				println!("thread_id: {}", i);
 				checkpoint.check_in();
 			});      
@@ -253,88 +263,53 @@ mod tests{
 	#[test]
 	fn single_use() {
 		let mut barrier = Barrier::new(THREADS);
-		threaded_run(barrier.activate());
+		threaded_run(&mut barrier.activate(), THREADS).unwrap();
 	}
 
 	#[test]
 	fn reuse() {
 		let mut barrier = Barrier::new(THREADS);
-		threaded_run(barrier.activate());
-		threaded_run(barrier.activate());
-		threaded_run(barrier.activate());
-		threaded_run(barrier.activate());
-		threaded_run(barrier.activate());
+		threaded_run(&mut barrier.activate(), THREADS).unwrap();
+		threaded_run(&mut barrier.activate(), THREADS).unwrap();
+		threaded_run(&mut barrier.activate(), THREADS).unwrap();
+		threaded_run(&mut barrier.activate(), THREADS).unwrap();
+		threaded_run(&mut barrier.activate(), THREADS).unwrap();
 	}
 
 	#[test]
 	fn test_checkpoint_panic_detection() {
 		let mut barrier = Barrier::new(THREADS);
-		panic_run(barrier.activate());
+		panic_run(&mut barrier.activate());
 	}
 
 	#[test]
 	fn not_enough_checkpoints() {
-
-		fn run(mut barrier: ActiveBarrier){
-			for i in 0..THREADS-1{
-				let mut checkpoint = barrier.checkpoint();
-				std::thread::spawn(move||{
-					std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
-					println!("thread_id: {}", i);
-					checkpoint.check_in();
-				});      
-			}
-			std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
-			let result = barrier.wait();
-			assert_eq!(result, Err(WaitError::InsufficientCheckpoints)); // avoid deadlock but return error
-			println!("main thread");
-		}
-
 		let mut barrier = Barrier::new(THREADS);
-		run(barrier.activate());
+		assert_eq!(threaded_run(&mut barrier.activate(), THREADS-1), Err(WaitError::InsufficientCheckpoints));
 	}
 
 	#[test]
 	#[should_panic]
 	fn too_many_checkpoints() {
-		fn run(mut barrier: ActiveBarrier){
-			for i in 0..THREADS+1{
-				let mut checkpoint = barrier.checkpoint(); // panic here to avoid creating > n checkpoints
-				std::thread::spawn(move||{
-					std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
-					println!("thread_id: {}", i);
-					checkpoint.check_in();
-				});      
-			}
-			std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
-			barrier.wait().unwrap();
-			println!("main thread");
-		}
-
 		let mut barrier = Barrier::new(THREADS);
-		run(barrier.activate());
+		threaded_run(&mut barrier.activate(), THREADS+1).unwrap();
 	}
 
 	#[test]
-	fn test_finished() {
-		fn run(mut barrier: ActiveBarrier){
-			assert_eq!(false, barrier.finished());
-			for i in 0..THREADS{
-				let mut checkpoint = barrier.checkpoint();
-				std::thread::spawn(move||{
-					std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
-					println!("thread_id: {}", i);
-					checkpoint.check_in();
-				});      
-			}
-			std::thread::sleep(std::time::Duration::new(0,rand::thread_rng().gen_range(1,10)*10_000_000));
-			barrier.wait().unwrap();
-			assert_eq!(true, barrier.finished());
-			println!("main thread");
-		}
-
+	fn test_finished_true() {
 		let mut barrier = Barrier::new(THREADS);
-		run(barrier.activate());
+		let mut active_barrier = barrier.activate();
+		threaded_run(&mut active_barrier, THREADS).unwrap();
+		assert_eq!(true, active_barrier.finished());
+	}
+
+	#[test]
+	fn test_finished_false() {
+		let mut barrier = Barrier::new(THREADS);
+		let mut active_barrier = barrier.activate();
+		assert_eq!(false, active_barrier.finished());
+		threaded_run(&mut active_barrier, THREADS).unwrap();
+		
 	}
 }
 
